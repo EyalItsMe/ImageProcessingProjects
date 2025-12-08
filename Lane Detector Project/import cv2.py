@@ -10,6 +10,7 @@ HISTORY_LENGTH = 50
 # --- HELPER FUNCTIONS ---
 
 def filter_white_pixels(image, white_threshold=200, show_debug=False):
+    # hello 
     # hey
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
