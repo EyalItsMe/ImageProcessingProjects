@@ -5,7 +5,7 @@ import numpy as np
 VIDEO_INPUT = 'Dashcam highway.mp4'
 VIDEO_OUTPUT = 'lane_detection_output.mp4'
 CROP_Y = 250
-HISTORY_LENGTH = 15
+HISTORY_LENGTH = 30
 
 # --- HELPER FUNCTIONS ---
 
@@ -116,11 +116,24 @@ def draw_lane_polygon(image, left_line, right_line):
     cv2.line(image, left_bottom, left_top, (255, 0, 0), 3)
     cv2.line(image, right_bottom, right_top, (255, 0, 0), 3)
 
+def get_x_coordinate(rho, theta, y):
+    a = np.cos(theta)
+    b = np.sin(theta)
+    if abs(a) < 0.001: return 0
+    return int((rho - y * b) / a)
+
 # --- MAIN EXECUTION ---
 
 def process_video():
     left_line_history = []
     right_line_history = []
+    
+    # Lane Change Detection Variables
+    prev_lane_center = None
+    lane_center_trend = 0
+    lane_change_status = ""
+    last_valid_smooth_left = None
+    last_valid_smooth_right = None
     
     cap = cv2.VideoCapture(VIDEO_INPUT)
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -165,9 +178,60 @@ def process_video():
             smooth_left = get_weighted_average(left_line_history)
             smooth_right = get_weighted_average(right_line_history)
             
-            # 4. Draw (Only if we have a valid history)
+            # 4. Lane Change Logic & Drawing
             if smooth_left[0] is not None and smooth_right[0] is not None:
+                # We have lanes, so we can calculate position and trend
                 draw_lane_polygon(cropped_frame, smooth_left, smooth_right)
+                
+                # Update last known valid lanes
+                last_valid_smooth_left = smooth_left
+                last_valid_smooth_right = smooth_right
+
+                # Calculate center x at bottom of crop
+                x_left = get_x_coordinate(smooth_left[0], smooth_left[1], crop_h)
+                x_right = get_x_coordinate(smooth_right[0], smooth_right[1], crop_h)
+                current_lane_center = (x_left + x_right) / 2
+                
+                if prev_lane_center is not None:
+                    movement = current_lane_center - prev_lane_center
+                    # Exponential moving average for trend to smooth out jitter
+                    lane_center_trend = 0.9 * lane_center_trend + 0.1 * movement
+                
+                prev_lane_center = current_lane_center
+                lane_change_status = "" # Reset status when lanes are found
+                
+            else:
+                # Lanes are lost (History not available)
+                # Determine direction based on last known trend
+                # If trend > 0 (Lanes moved Right) -> Car moved Left
+                # If trend < 0 (Lanes moved Left) -> Car moved Right
+                if abs(lane_center_trend) > 0.1: # Threshold to ignore minor drift
+                    if lane_center_trend > 0:
+                        new_status = "Changing lanes to the Left"
+                    else:
+                        new_status = "Changing lanes to the Right"
+
+                    if lane_change_status != new_status:
+                        print(f"[Lane Change Detected] {new_status}")
+                        lane_change_status = new_status
+                else:
+                    # If lost lines but NO lane change detected, keep drawing old polygon
+                    if last_valid_smooth_left is not None and last_valid_smooth_right is not None:
+                         draw_lane_polygon(cropped_frame, last_valid_smooth_left, last_valid_smooth_right)
+            
+            # Display status on the main frame
+            if lane_change_status:
+                text_size = cv2.getTextSize(lane_change_status, cv2.FONT_HERSHEY_DUPLEX, 1.2, 2)[0]
+                text_x = (frame_width - text_size[0]) // 2
+                text_y = 100
+                
+                # Draw semi-transparent box
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (text_x - 10, text_y - 40), (text_x + text_size[0] + 10, text_y + 10), (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+                
+                cv2.putText(frame, lane_change_status, (text_x, text_y), cv2.FONT_HERSHEY_DUPLEX, 
+                            1.2, (0, 255, 255), 2, cv2.LINE_AA)
                 
             frame[CROP_Y:, :] = cropped_frame
             cv2.imshow("Debug 4: Final Output", frame)
