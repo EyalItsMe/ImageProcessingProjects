@@ -1,18 +1,39 @@
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt 
+
 
 # --- CONFIGURATION ---
 VIDEO_INPUT = 'Dashcam highway.mp4'
 VIDEO_OUTPUT = 'lane_detection_output.mp4'
-CROP_Y = 250
-HISTORY_LENGTH = 15
+HISTORY_LENGTH = 20 
 
 # --- HELPER FUNCTIONS ---
 
+def region_of_interest(image, show_debug=False):
+    """
+    Applies a trapezoid mask using specific coordinates.
+    """
+    height, width = image.shape[:2]
+    polygons = np.array([
+        [(100, height), (350, 250), (450, 250), (600, height)]
+    ])
+    
+    mask = np.zeros_like(image)
+    
+    cv2.fillPoly(mask, polygons, (255, 255, 255)) # 3 channels for BGR image
+    masked_image = cv2.bitwise_and(image, mask)
+    
+    if show_debug:
+        cv2.imshow("Debug 0: ROI Mask", masked_image)
+        
+    return masked_image
+
 def filter_white_pixels(image, show_debug=False):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    lower_white = np.array([0, 0, 160]) 
-    upper_white = np.array([180, 100, 255]) 
+    # Optimized for white lanes in shadow/sun
+    lower_white = np.array([0, 0, 165]) 
+    upper_white = np.array([180, 80, 255]) 
     mask = cv2.inRange(hsv, lower_white, upper_white)
     if show_debug:
         cv2.imshow("Debug 1: HSV White Filter", mask)
@@ -23,6 +44,17 @@ def canny_edge_detector(image, show_debug=False):
     canny = cv2.Canny(blur, 130, 200)
     if show_debug:
         cv2.imshow("Debug 2: Canny Edges", canny)
+        # plt.imshow(canny)
+
+        # # Optional: Add labels to make it clear
+        # plt.xlabel("Width (Pixels)")
+        # plt.ylabel("Height (Pixels)")
+        # plt.title("Image with Pixel Axes")
+        # # Ensure axes are visible (they are on by default, but this forces it)
+        # plt.axis('on')
+        # plt.show()
+
+
     return canny
 
 def detect_hough_lines(canny_image, rho_res, theta_res, threshold, color_image_for_debug, show_debug=False):
@@ -59,10 +91,10 @@ def get_good_lane_lines(lines, height, width):
         x_bottom = int((rho - height * b) / a)
 
         if 35 < angle_deg < 55:
-            if 150 < x_bottom < 250: 
+            if 130 < x_bottom < 250: 
                 good_left_lines.append((rho, theta))
         elif 120 < angle_deg < 140:
-            if 450 < x_bottom < 550:
+            if 450 < x_bottom < 570:
                 good_right_lines.append((rho, theta))
     return good_left_lines, good_right_lines
 
@@ -73,25 +105,18 @@ def get_average_lane(lines):
     return np.mean(rhos), np.mean(thetas)
 
 def get_weighted_average(history):
-    # 1. Extract only the VALID frames from the history (ignore None)
     valid_lines = [line for line in history if line[0] is not None]
-    
     N = len(valid_lines)
-    
-    # 2. If no valid lines exist in the last 10 frames, return None
     if N == 0: return None, None
     
-    # 3. Calculate weights (gives more importance to recent frames)
     weights = np.arange(1, N + 1)
-    
     rhos = np.array([h[0] for h in valid_lines])
     thetas = np.array([h[1] for h in valid_lines])
     
     return np.sum(weights * rhos) / np.sum(weights), np.sum(weights * thetas) / np.sum(weights)
 
 def draw_lane_polygon(image, left_line, right_line):
-    if left_line[0] is None or right_line[0] is None:
-        return
+    if left_line[0] is None or right_line[0] is None: return
 
     rho_l, theta_l = left_line
     rho_r, theta_r = right_line
@@ -103,16 +128,22 @@ def draw_lane_polygon(image, left_line, right_line):
         if abs(a) < 0.001: return 0
         return int((rho - y * b) / a)
 
-    left_bottom  = (get_x(rho_l, theta_l, height), height)
-    left_top     = (get_x(rho_l, theta_l, 0), 0)
-    right_top    = (get_x(rho_r, theta_r, 0), 0)
-    right_bottom = (get_x(rho_r, theta_r, height), height)
+    # Use the Top Y of your trapezoid (250)
+    y_top = 250
+    # Use the Bottom Y of your trapezoid (360)
+    y_bottom = 360
+
+    left_bottom  = (get_x(rho_l, theta_l, y_bottom), y_bottom)
+    left_top     = (get_x(rho_l, theta_l, y_top), y_top)
+    right_top    = (get_x(rho_r, theta_r, y_top), y_top)
+    right_bottom = (get_x(rho_r, theta_r, y_bottom), y_bottom)
     
     pts = np.array([[left_bottom, left_top, right_top, right_bottom]], dtype=np.int32)
     overlay = image.copy()
     
     cv2.fillPoly(overlay, pts, (255, 0, 0))
     cv2.addWeighted(overlay, 0.4, image, 1 - 0.4, 0, image)
+    
     cv2.line(image, left_bottom, left_top, (255, 0, 0), 3)
     cv2.line(image, right_bottom, right_top, (255, 0, 0), 3)
 
@@ -127,7 +158,6 @@ def process_video():
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     
-    # Use 'avc1' for safer video writing
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
     out = cv2.VideoWriter(VIDEO_OUTPUT, fourcc, fps, (frame_width, frame_height))
     
@@ -138,38 +168,34 @@ def process_video():
             ret, frame = cap.read()
             if not ret: break 
             
-            cropped_frame = frame[CROP_Y:, :]
-            crop_h, crop_w = cropped_frame.shape[:2]
+            # --- 1. APPLY ROI FIRST ---
+            # This blacks out everything outside the trapezoid immediately
+            roi_image = region_of_interest(frame, show_debug=True)
             
-            # 1. Detect
-            # FIX: Removed invalid 'white_threshold' argument
-            white_lanes = filter_white_pixels(cropped_frame, show_debug=True)
+            # --- 2. Filter White (on the ROI image) ---
+            white_lanes = filter_white_pixels(roi_image, show_debug=True)
+            
+            # --- 3. Canny Edges ---
             canny_image = canny_edge_detector(white_lanes, show_debug=True)
-            all_lines = detect_hough_lines(canny_image, 1, np.pi / 180, 30, cropped_frame, show_debug=True)
             
-            left_cand, right_cand = get_good_lane_lines(all_lines, crop_h, crop_w)
+            # --- 4. Hough Transform ---
+            all_lines = detect_hough_lines(canny_image, 1, np.pi / 180, 30, frame, show_debug=True)
+            
+            left_cand, right_cand = get_good_lane_lines(all_lines, frame_height, frame_width)
             curr_left = get_average_lane(left_cand)
             curr_right = get_average_lane(right_cand)
             
-            # 2. UPDATE HISTORY (With sliding window logic)
-            # We append WHATEVER we got (even if it is None)
             left_line_history.append(curr_left)
-            if len(left_line_history) > HISTORY_LENGTH:
-                left_line_history.pop(0)
+            if len(left_line_history) > HISTORY_LENGTH: left_line_history.pop(0)
             
             right_line_history.append(curr_right)
-            if len(right_line_history) > HISTORY_LENGTH:
-                right_line_history.pop(0)
+            if len(right_line_history) > HISTORY_LENGTH: right_line_history.pop(0)
 
-            # 3. Calculate Average of VALID frames in history
             smooth_left = get_weighted_average(left_line_history)
             smooth_right = get_weighted_average(right_line_history)
             
-            # 4. Draw (Only if we have a valid history)
             if smooth_left[0] is not None and smooth_right[0] is not None:
-                draw_lane_polygon(cropped_frame, smooth_left, smooth_right)
-                
-            frame[CROP_Y:, :] = cropped_frame
+                draw_lane_polygon(frame, smooth_left, smooth_right)
             cv2.imshow("Debug 4: Final Output", frame)
             out.write(frame)
             
@@ -183,7 +209,7 @@ def process_video():
         cap.release()
         out.release()
         cv2.destroyAllWindows()
-        print("Done!")
+        print("Done! Video saved.")
 
 if __name__ == "__main__":
     process_video()
