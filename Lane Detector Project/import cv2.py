@@ -7,17 +7,27 @@ from pathlib import Path
 
 
 # --- CONFIGURATION ---
-VIDEO_PROFILE = "day"  # choose: "day" or "night"
+VIDEO_PROFILE = "crosswalk"  # choose: "day" or "night" or "crosswalk"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent  # .../Project1/Lane Detector Project
 _PROJECT_DIR = _SCRIPT_DIR.parent             # .../Project1
 _VIDEO_INPUTS = {
     "day": _SCRIPT_DIR / "Dashcam highway.mp4",
-    "night": _PROJECT_DIR / "night_drive_480.mp4",
+    "night": _PROJECT_DIR / "night_drive.mp4",
+    "crosswalk": _PROJECT_DIR / "crosswalk.mp4",
 }
 VIDEO_INPUT = str(_VIDEO_INPUTS[VIDEO_PROFILE])
 VIDEO_OUTPUT = 'lane_detection_output.mp4'
 HISTORY_LENGTH = 20 
+
+# --- CROSSWALK ROI (TRAPEZOID) ---
+CW_BOTTOM_LEFT_X_RATIO  = 0.0
+CW_TOP_LEFT_X_RATIO     = 0.35
+CW_TOP_RIGHT_X_RATIO    = 0.65
+CW_BOTTOM_RIGHT_X_RATIO = 0.9
+
+CW_TOP_Y_RATIO    = 0.65
+CW_BOTTOM_Y_RATIO = 0.9
 
 # --- ROI / GEOMETRY (resolution-independent) ---
 # We keep *two* sets of parameters:
@@ -51,23 +61,48 @@ LANE_PROFILES = {
         "APPLY_CONTRAST": False,
         "CONTRAST_ALPHA": 1.0,  # 1.0 = no change
     },
+    "crosswalk":
+     {
+        # ROI trapezoid (ratios)
+        "ROI_BOTTOM_LEFT_X_RATIO": 100 / 640,
+        "ROI_TOP_LEFT_X_RATIO": 300 / 640,
+        "ROI_TOP_RIGHT_X_RATIO": 420 / 640,
+        "ROI_BOTTOM_RIGHT_X_RATIO": 600 / 640,
+        "ROI_TOP_Y_RATIO": 250 / 360,
+        "ROI_BOTTOM_Y_RATIO": 360 / 360,
+        # x_bottom windows for filtering "good" Hough lines (ratios)
+        "LEFT_X_BOTTOM_MIN_RATIO": 130 / 640,
+        "LEFT_X_BOTTOM_MAX_RATIO": 200 / 640,
+        "RIGHT_X_BOTTOM_MIN_RATIO": 450 / 640,
+        "RIGHT_X_BOTTOM_MAX_RATIO": 580 / 640,
+        # Hough theta angle gates (degrees) for lane-like lines
+        "LEFT_ANGLE_MIN_DEG": 35,
+        "LEFT_ANGLE_MAX_DEG": 55,
+        "RIGHT_ANGLE_MIN_DEG": 120,
+        "RIGHT_ANGLE_MAX_DEG": 130,
+        # Brightness adjustment (OFF by default for day)
+        "APPLY_BRIGHTNESS": True,
+        "BRIGHTNESS_BETA": 45,  # 0..60 (adds to V channel)
+        "APPLY_CONTRAST": True,
+        "CONTRAST_ALPHA": 1.40,  # 1.0 = no change
+    },
     "night": {
         # Your tuned ROI (ratios) for night video
-        "ROI_BOTTOM_LEFT_X_RATIO": 60 / 640,
+        "ROI_BOTTOM_LEFT_X_RATIO": 50 / 640,
         # Move this LEFT to widen the ROI on the left side near the horizon
-        "ROI_TOP_LEFT_X_RATIO": 240 / 640,
-        "ROI_TOP_RIGHT_X_RATIO": 470 / 640,
+        "ROI_TOP_LEFT_X_RATIO": 250 / 640,
+        "ROI_TOP_RIGHT_X_RATIO": 450 / 640,
         "ROI_BOTTOM_RIGHT_X_RATIO": 600 / 640,
-        "ROI_TOP_Y_RATIO": 260 / 360,
+        "ROI_TOP_Y_RATIO": 250 / 360,
         "ROI_BOTTOM_Y_RATIO": 360 / 360,
         # Keep these unless you want to tune them separately for night
-        "LEFT_X_BOTTOM_MIN_RATIO": 100 / 640,
-        "LEFT_X_BOTTOM_MAX_RATIO": 180 / 640,
-        "RIGHT_X_BOTTOM_MIN_RATIO": 450 / 640,
-        "RIGHT_X_BOTTOM_MAX_RATIO": 600 / 640,
+        "LEFT_X_BOTTOM_MIN_RATIO": 130 / 640,
+        "LEFT_X_BOTTOM_MAX_RATIO": 250 / 640,
+        "RIGHT_X_BOTTOM_MIN_RATIO": 470 / 640,
+        "RIGHT_X_BOTTOM_MAX_RATIO": 570 / 640,
         # Night footage tends to be noisier; allow a wider band (especially for the right lane)
         "LEFT_ANGLE_MIN_DEG": 30,
-        "LEFT_ANGLE_MAX_DEG": 65,
+        "LEFT_ANGLE_MAX_DEG": 55,
         "RIGHT_ANGLE_MIN_DEG": 120,
         "RIGHT_ANGLE_MAX_DEG": 140,
         # Brightness adjustment (night / low-light)
@@ -136,6 +171,31 @@ def adjust_contrast_v_channel(image_bgr, alpha):
     hsv2 = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv2, cv2.COLOR_HSV2BGR)
 
+def crosswalk_roi(image, show_debug=False):
+    h, w = image.shape[:2]
+
+    y_top = int(CW_TOP_Y_RATIO * h)
+    y_bot = int(CW_BOTTOM_Y_RATIO * h)
+
+    polygon = np.array([[
+        (int(CW_BOTTOM_LEFT_X_RATIO  * w), y_bot),
+        (int(CW_TOP_LEFT_X_RATIO     * w), y_top),
+        (int(CW_TOP_RIGHT_X_RATIO    * w), y_top),
+        (int(CW_BOTTOM_RIGHT_X_RATIO * w), y_bot),
+    ]], dtype=np.int32)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, polygon, 255)
+
+    masked = cv2.bitwise_and(image, image, mask=mask)
+
+    if show_debug:
+        debug = image.copy()
+        cv2.polylines(debug, polygon, True, (0, 255, 255), 2)
+        cv2.imshow("DEBUG CW Trapezoid ROI", debug)
+
+    return masked, (y_top, y_bot)
+
 def region_of_interest(image, show_debug=False, return_mask=False):
     """
     Applies a trapezoid mask using specific coordinates.
@@ -171,6 +231,32 @@ def region_of_interest(image, show_debug=False, return_mask=False):
         return masked_image, mask_gray
     return masked_image
 
+def filter_crosswalk_white_adaptive(image):
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+
+    height = v.shape[0]
+    mask = np.zeros_like(v)
+
+    for y in range(height):
+        # y=0 top (far), y=height bottom (near)
+        # Allow darker whites farther away
+        min_v = int(160 + 60 * (y / height))  # 160 → 220
+        min_v = min(min_v, 220)
+
+        row_mask = (
+            (s[y] < 70) &
+            (v[y] > min_v)
+        )
+        mask[y, row_mask] = 255
+
+    # Clean up stripes
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    return mask
+
+
 def filter_white_pixels(image, show_debug=False):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     # Optimized for white lanes in shadow/sun
@@ -198,6 +284,34 @@ def canny_edge_detector(image, show_debug=False):
 
 
     return canny
+
+def detect_crosswalk_lines(canny, show_debug=False):
+    lines = cv2.HoughLinesP(
+        canny,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=30,
+        minLineLength=60,
+        maxLineGap=30
+    )
+
+    horizontal = []
+    if lines is None:
+        return horizontal
+
+    for l in lines:
+        x1, y1, x2, y2 = l[0]
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle < 10:  # horizontal
+            horizontal.append((x1, y1, x2, y2))
+
+    if show_debug:
+        dbg = cv2.cvtColor(canny, cv2.COLOR_GRAY2BGR)
+        for x1, y1, x2, y2 in horizontal:
+            cv2.line(dbg, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.imshow("Debug CW 1: Horizontal Lines", dbg)
+
+    return horizontal
 
 def detect_hough_lines(canny_image, rho_res, theta_res, threshold, color_image_for_debug, show_debug=False):
     all_lines = cv2.HoughLines(canny_image, rho_res, theta_res, threshold)
@@ -299,6 +413,21 @@ def get_x_coordinate(rho, theta, y):
     if abs(a) < 0.001: return 0
     return int((rho - y * b) / a)
 
+def is_crosswalk(horizontal_lines, show_debug=False, debug_image=None):
+# --- CALIBRATED PATTERN PARAMETERS ---
+    
+    MIN_STRIPES = 12
+
+    if len(horizontal_lines) < MIN_STRIPES:
+        return False
+
+    # 1. Get Midpoint Y-coordinates for all stripes
+    ys = sorted([(y1 + y2) // 2 for _, y1, _, y2 in horizontal_lines])
+    
+    if len(ys) < 2:
+        return False
+    return True
+
 # --- MAIN EXECUTION ---
 
 def process_video():
@@ -318,6 +447,11 @@ def process_video():
     lane_change_candidate = None  # "left" | "right" | None
     lane_change_candidate_frames = 0
     
+    # Crosswalk Detection Variables (temporal consistency)
+    crosswalk_detection_history = []  # Track recent detections (True/False)
+    CROSSWALK_HISTORY_LENGTH = 5  # Keep last 10 frames
+    MIN_CROSSWALK_FRAMES = 3  # Need at least 5 positive detections
+    
     cap = cv2.VideoCapture(VIDEO_INPUT)
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -336,24 +470,49 @@ def process_video():
             h,w = frame.shape[:2]
 
             # --- 0. BRIGHTNESS (night only / low-light) ---
-            if APPLY_BRIGHTNESS and VIDEO_PROFILE == "night":
+            if APPLY_BRIGHTNESS:
                 frame = adjust_brightness_v_channel(frame, BRIGHTNESS_BETA)
             # --- 0b. CONTRAST (night only / low-light) ---
-            if APPLY_CONTRAST and VIDEO_PROFILE == "night":
+            if APPLY_CONTRAST:
                 frame = adjust_contrast_v_channel(frame, CONTRAST_ALPHA)
 
             # --- 1. APPLY ROI FIRST ---
             # This blacks out everything outside the trapezoid immediately
-            roi_image, roi_mask = region_of_interest(frame, show_debug=True, return_mask=True)
+            roi_image, roi_mask = region_of_interest(frame, show_debug=False, return_mask=True)
             
             # --- 2. Filter White (on the ROI image) ---
-            white_lanes = filter_white_pixels(roi_image, show_debug=True)
+            white_lanes = filter_white_pixels(roi_image, show_debug=False)
             
             # --- 3. Canny Edges ---
-            canny_image = canny_edge_detector(white_lanes, show_debug=True)
+            canny_image = canny_edge_detector(white_lanes, show_debug=False)
             
+
+               
+            # --- CROSSWALK DETECTION ---
+            cw_roi_img, (cw_y1, cw_y2) = crosswalk_roi(frame, show_debug=False)
+            
+            cw_white = filter_crosswalk_white_adaptive(cw_roi_img)
+            # cv2.imshow("CW White Mask", cw_white)
+
+            cw_edges = canny_edge_detector(cw_white, show_debug=False)
+
+            
+            cw_lines = detect_crosswalk_lines(cw_edges, show_debug=True)
+
+            frame_has_crosswalk = is_crosswalk(
+                cw_lines,
+                show_debug=True,
+                debug_image=cw_roi_img
+            )
+
+            crosswalk_detection_history.append(frame_has_crosswalk)
+            if len(crosswalk_detection_history) > CROSSWALK_HISTORY_LENGTH:
+                crosswalk_detection_history.pop(0)
+
+            confirmed_crosswalk = sum(crosswalk_detection_history) >= MIN_CROSSWALK_FRAMES
+
             # --- 4. Hough Transform ---
-            all_lines = detect_hough_lines(canny_image, 1, np.pi / 180, 30, frame, show_debug=True)
+            all_lines = detect_hough_lines(canny_image, 1, np.pi / 180, 30, frame, show_debug=False)
             
             left_cand, right_cand = get_good_lane_lines(all_lines, frame_height, frame_width)
             curr_left = get_average_lane(left_cand)
@@ -446,6 +605,18 @@ def process_video():
                 cv2.putText(frame, lane_change_status, (text_x, text_y), cv2.FONT_HERSHEY_DUPLEX, 
                             1.2, (0, 255, 255), 2, cv2.LINE_AA)
                 
+            if confirmed_crosswalk:
+                cv2.rectangle(frame, (0, cw_y1), (frame_width, cw_y2), (0, 0, 255), 2)
+                cv2.putText(
+                    frame,
+                    "CROSSWALK AHEAD",
+                    (frame_width // 2 - 200, cw_y1 - 10),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    1.2,
+                    (0, 0, 255),
+                    3
+                )
+ 
             cv2.imshow("Debug 4: Final Output", frame)
             out.write(frame)
             
