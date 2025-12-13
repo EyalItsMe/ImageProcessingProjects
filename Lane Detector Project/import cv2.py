@@ -7,17 +7,17 @@ from pathlib import Path
 
 
 # --- CONFIGURATION ---
-VIDEO_PROFILE = "day"  # choose: "day" or "night"
+VIDEO_PROFILE = "night"  # choose: "day" or "night"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent  # .../Project1/Lane Detector Project
 _PROJECT_DIR = _SCRIPT_DIR.parent             # .../Project1
 _VIDEO_INPUTS = {
     "day": _SCRIPT_DIR / "Dashcam highway.mp4",
-    "night": _PROJECT_DIR / "night_drive_480.mp4",
+    "night": _PROJECT_DIR / "night_drive_2.mp4",
 }
 VIDEO_INPUT = str(_VIDEO_INPUTS[VIDEO_PROFILE])
 VIDEO_OUTPUT = 'lane_detection_output.mp4'
-HISTORY_LENGTH = 20 
+HISTORY_LENGTH = 20
 
 # --- ROI / GEOMETRY (resolution-independent) ---
 # We keep *two* sets of parameters:
@@ -53,29 +53,29 @@ LANE_PROFILES = {
     },
     "night": {
         # Your tuned ROI (ratios) for night video
-        "ROI_BOTTOM_LEFT_X_RATIO": 60 / 640,
+        "ROI_BOTTOM_LEFT_X_RATIO": 130 / 640,
         # Move this LEFT to widen the ROI on the left side near the horizon
-        "ROI_TOP_LEFT_X_RATIO": 240 / 640,
-        "ROI_TOP_RIGHT_X_RATIO": 470 / 640,
+        "ROI_TOP_LEFT_X_RATIO": 370 / 640,
+        "ROI_TOP_RIGHT_X_RATIO": 450 / 640,
         "ROI_BOTTOM_RIGHT_X_RATIO": 600 / 640,
         "ROI_TOP_Y_RATIO": 260 / 360,
         "ROI_BOTTOM_Y_RATIO": 360 / 360,
         # Keep these unless you want to tune them separately for night
-        "LEFT_X_BOTTOM_MIN_RATIO": 100 / 640,
-        "LEFT_X_BOTTOM_MAX_RATIO": 180 / 640,
-        "RIGHT_X_BOTTOM_MIN_RATIO": 450 / 640,
-        "RIGHT_X_BOTTOM_MAX_RATIO": 600 / 640,
+        "LEFT_X_BOTTOM_MIN_RATIO": 130 / 640,
+        "LEFT_X_BOTTOM_MAX_RATIO": 250 / 640,
+        "RIGHT_X_BOTTOM_MIN_RATIO": 400 / 640,
+        "RIGHT_X_BOTTOM_MAX_RATIO": 560 / 640,
         # Night footage tends to be noisier; allow a wider band (especially for the right lane)
-        "LEFT_ANGLE_MIN_DEG": 30,
-        "LEFT_ANGLE_MAX_DEG": 65,
+        "LEFT_ANGLE_MIN_DEG": 35,
+        "LEFT_ANGLE_MAX_DEG": 55,
         "RIGHT_ANGLE_MIN_DEG": 120,
         "RIGHT_ANGLE_MAX_DEG": 140,
         # Brightness adjustment (night / low-light)
         "APPLY_BRIGHTNESS": True,
-        "BRIGHTNESS_BETA": 15,  # start here; try 15..45
+        "BRIGHTNESS_BETA": 55,  # start here; try 15..45
         # Contrast adjustment (night / low-light)
         "APPLY_CONTRAST": True,
-        "CONTRAST_ALPHA": 1.20,  # start here; try 1.10..1.50
+        "CONTRAST_ALPHA": 1.30,  # start here; try 1.10..1.50
     },
 }
 
@@ -314,7 +314,7 @@ def process_video():
     # Lane change gating (reduce false positives):
     # Only display/confirm lane change after N consecutive "lane lost" frames
     # with a consistent direction signal.
-    MIN_LANE_CHANGE_FRAMES = 15 if VIDEO_PROFILE == "night" else 7
+    MIN_LANE_CHANGE_FRAMES = 7 if VIDEO_PROFILE == "night" else 7
     lane_change_candidate = None  # "left" | "right" | None
     lane_change_candidate_frames = 0
     
