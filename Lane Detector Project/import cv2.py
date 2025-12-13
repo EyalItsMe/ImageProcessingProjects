@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 
 
 # --- CONFIGURATION ---
-VIDEO_INPUT = 'Dashcam highway.mp4'
-VIDEO_OUTPUT = 'lane_detection_output.mp4'
+VIDEO_INPUT = 'Night_drive.mp4'
+VIDEO_OUTPUT = 'Night_drive_lane_detection_output.mp4'
 HISTORY_LENGTH = 20 
 
 # --- HELPER FUNCTIONS ---
@@ -16,7 +16,7 @@ def region_of_interest(image, show_debug=False):
     """
     height, width = image.shape[:2]
     polygons = np.array([
-        [(100, height), (350, 250), (450, 250), (600, height)]
+        [(50, height), (250, 250), (450, 250), (600, height)]
     ])
     
     mask = np.zeros_like(image)
@@ -32,8 +32,8 @@ def region_of_interest(image, show_debug=False):
 def filter_white_pixels(image, show_debug=False):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     # Optimized for white lanes in shadow/sun
-    lower_white = np.array([0, 0, 165]) 
-    upper_white = np.array([180, 80, 255]) 
+    lower_white = np.array([0, 0, 160]) 
+    upper_white = np.array([180, 75, 255]) 
     mask = cv2.inRange(hsv, lower_white, upper_white)
     if show_debug:
         cv2.imshow("Debug 1: HSV White Filter", mask)
@@ -94,7 +94,7 @@ def get_good_lane_lines(lines, height, width):
             if 130 < x_bottom < 250: 
                 good_left_lines.append((rho, theta))
         elif 120 < angle_deg < 140:
-            if 450 < x_bottom < 570:
+            if 470 < x_bottom < 570:
                 good_right_lines.append((rho, theta))
     return good_left_lines, good_right_lines
 
@@ -235,7 +235,7 @@ def process_video():
                 # Determine direction based on last known trend
                 # If trend > 0 (Lanes moved Right) -> Car moved Left
                 # If trend < 0 (Lanes moved Left) -> Car moved Right
-                if abs(lane_center_trend) > 0.1: # Threshold to ignore minor drift
+                if abs(lane_center_trend) > 0.2: # Threshold to ignore minor drift
                     if lane_center_trend > 0:
                         new_status = "Changing lanes to the Left"
                     else:
