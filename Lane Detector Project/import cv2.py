@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 # --- CONFIGURATION ---
-VIDEO_PROFILE = "crosswalk"  # choose: "day" or "night" or "crosswalk"
+VIDEO_PROFILE = "day"  # choose: "day" or "night" or "crosswalk"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent  # .../Project1/Lane Detector Project
 _PROJECT_DIR = _SCRIPT_DIR.parent             # .../Project1
@@ -552,44 +552,25 @@ def process_video():
                 lane_change_candidate_frames = 0
                 
             else:
-                # Lanes are lost (History not available)
-                # Determine direction based on last known trend
-                # If trend > 0 (Lanes moved Right) -> Car moved Left
-                # If trend < 0 (Lanes moved Left) -> Car moved Right
-                if abs(lane_center_trend) > 0.4: # Threshold to ignore minor drift
+                # Lanes lost - always persist last valid lanes visually
+                if last_valid_smooth_left is not None and last_valid_smooth_right is not None:
+                    draw_lane_polygon(frame, last_valid_smooth_left, last_valid_smooth_right)
+                
+                # Track lane change direction based on trend
+                if abs(lane_center_trend) > 0.4:
                     candidate = "left" if lane_center_trend > 0 else "right"
-
-                    if lane_change_candidate == candidate:
-                        lane_change_candidate_frames += 1
-                    else:
-                        lane_change_candidate = candidate
-                        lane_change_candidate_frames = 1
-
-                    # Only confirm/display after MIN_LANE_CHANGE_FRAMES consecutive frames.
+                    lane_change_candidate_frames = lane_change_candidate_frames + 1 if lane_change_candidate == candidate else 1
+                    lane_change_candidate = candidate
+                    
                     if lane_change_candidate_frames >= MIN_LANE_CHANGE_FRAMES:
-                        new_status = (
-                            "Changing lanes to the Left"
-                            if lane_change_candidate == "left"
-                            else "Changing lanes to the Right"
-                        )
+                        new_status = f"Changing lanes to the {'Left' if candidate == 'left' else 'Right'}"
                         if lane_change_status != new_status:
-                            print(
-                                f"[Lane Change Detected] {new_status} "
-                                f"(trend={lane_center_trend:.3f}, frames={lane_change_candidate_frames})"
-                            )
+                            print(f"[Lane Change Detected] {new_status} (trend={lane_center_trend:.3f})")
                             lane_change_status = new_status
                     else:
-                        # Not enough evidence yet -> keep original output (no lane-change text)
                         lane_change_status = ""
-                        if last_valid_smooth_left is not None and last_valid_smooth_right is not None:
-                            draw_lane_polygon(frame, last_valid_smooth_left, last_valid_smooth_right)
                 else:
-                    # No strong trend -> reset candidate and keep original polygon if available
-                    lane_change_candidate = None
-                    lane_change_candidate_frames = 0
-                    lane_change_status = ""
-                    if last_valid_smooth_left is not None and last_valid_smooth_right is not None:
-                        draw_lane_polygon(frame, last_valid_smooth_left, last_valid_smooth_right)
+                    lane_change_candidate, lane_change_candidate_frames, lane_change_status = None, 0, ""
             
             # Display status on the main frame
             if lane_change_status:
