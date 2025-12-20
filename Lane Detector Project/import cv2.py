@@ -7,13 +7,13 @@ from pathlib import Path
 
 
 # --- CONFIGURATION ---
-VIDEO_PROFILE = "day"  # choose: "day" or "night" or "crosswalk"
+VIDEO_PROFILE = "night"  # choose: "day" or "night" or "crosswalk"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent  # .../Project1/Lane Detector Project
 _PROJECT_DIR = _SCRIPT_DIR.parent             # .../Project1
 _VIDEO_INPUTS = {
     "day": _SCRIPT_DIR / "Dashcam highway.mp4",
-    "night": _PROJECT_DIR / "night_drive.mp4",
+    "night": _SCRIPT_DIR / "Night_drive.mp4",
     "crosswalk": _PROJECT_DIR / "crosswalk.mp4",
 }
 VIDEO_INPUT = str(_VIDEO_INPUTS[VIDEO_PROFILE])
@@ -106,10 +106,10 @@ LANE_PROFILES = {
         "RIGHT_ANGLE_MIN_DEG": 120,
         "RIGHT_ANGLE_MAX_DEG": 140,
         # Brightness adjustment (night / low-light)
-        "APPLY_BRIGHTNESS": True,
+        "APPLY_BRIGHTNESS": False,
         "BRIGHTNESS_BETA": 15,  # start here; try 15..45
         # Contrast adjustment (night / low-light)
-        "APPLY_CONTRAST": True,
+        "APPLY_CONTRAST": False,
         "CONTRAST_ALPHA": 1.20,  # start here; try 1.10..1.50
     },
 }
@@ -390,15 +390,16 @@ def get_good_lane_lines(lines, height, width, lane_change_candidate=None):
     right_angle_max = RIGHT_ANGLE_MAX_DEG
 
     if lane_change_candidate == "left":
-        left_min = left_min - 0.1 * width
-        left_max = left_max 
-        right_min = right_min - 0.1 * width
-        right_max = right_max
-        #TODO: Change later
+        left_min = left_min - 0.2 * width
+        left_max = left_max - 0.05 * width
+        right_min = right_min - 0.3 * width
+        right_max = right_max - 0.2 * width
         left_angle_min = left_angle_min + 10
-        left_angle_max = left_angle_max + 40
+        left_angle_max = left_angle_max + 30
         right_angle_min = right_angle_min + 20
         right_angle_max = right_angle_max + 60
+        if (right_angle_max > 180):
+            right_angle_max = right_angle_max - 180
     elif lane_change_candidate == "right":
         left_min = left_min + 0.15 * width
         left_max = left_max + 0.22 * width
@@ -410,7 +411,6 @@ def get_good_lane_lines(lines, height, width, lane_change_candidate=None):
         right_angle_max = right_angle_max - 20
         if (left_angle_min < 0):
             left_angle_min = 180 + left_angle_min
-        print (f"Right lane change candidate: {left_min}, {left_max}, {right_min}, {right_max}, {left_angle_min}, {left_angle_max}, {right_angle_min}, {right_angle_max}")
 
     for r_t in lines:
         rho = r_t[0, 0]
@@ -423,12 +423,9 @@ def get_good_lane_lines(lines, height, width, lane_change_candidate=None):
 
         if (lane_change_candidate == "right"):
             if (angle_deg > left_angle_min or angle_deg < left_angle_max):
-                print (f"Found left candidate, x_bottom: {x_bottom}, angle_deg:  {angle_deg}")
-                print(f"Theta: {theta}, Rho: {rho}")
                 good_left_lines.append((rho, theta))
             else:
                 if right_angle_min < angle_deg < right_angle_max:
-                    print (f"Found right candidate, x_bottom: {x_bottom}, angle_deg:  {angle_deg}")
                     good_right_lines.append((rho, theta))
 
         elif (lane_change_candidate == "left"):
@@ -679,7 +676,7 @@ def process_video():
                     lane_right = last_valid_smooth_right
 
                 # Track lane change direction based on trend
-                if abs(lane_center_trend) > 0.4:
+                if abs(lane_center_trend) > 0.2:
                     
                     candidate = "left" if lane_center_trend > 0 else "right"
                     lane_change_candidate_frames = lane_change_candidate_frames + 1 if lane_change_candidate == candidate else 1
