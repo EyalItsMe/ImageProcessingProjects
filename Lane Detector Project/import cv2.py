@@ -400,6 +400,7 @@ def get_good_lane_lines(lines, height, width, lane_change_candidate=None):
         right_angle_max = right_angle_max + 60
         if (right_angle_max > 180):
             right_angle_max = right_angle_max - 180
+            
     elif lane_change_candidate == "right":
         left_min = left_min + 0.15 * width
         left_max = left_max + 0.22 * width
@@ -745,6 +746,9 @@ def process_video():
                 
                 cv2.putText(frame, lane_change_status, (text_x, text_y), cv2.FONT_HERSHEY_DUPLEX, 
                             1.2, (0, 255, 255), 2, cv2.LINE_AA)
+            else:
+                left_line_history_ls = []
+                right_line_history_ls = []
                 
             if confirmed_crosswalk:
                 cv2.rectangle(frame, (0, cw_y1), (frame_width, cw_y2), (0, 0, 255), 2)
