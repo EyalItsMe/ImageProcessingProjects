@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 # --- CONFIGURATION ---
-VIDEO_PROFILE = "night"  # choose: "day" or "night" or "crosswalk"
+VIDEO_PROFILE = "day"  # choose: "day" or "night" or "crosswalk"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent  # .../Project1/Lane Detector Project
 _PROJECT_DIR = _SCRIPT_DIR.parent             # .../Project1
@@ -697,7 +697,7 @@ def process_video():
             # New State machine for lane change:
 
             if lane_change_candidate:
-                roi_image_ls, roi_mask_ls = region_of_interest(frame, show_debug=True, return_mask=True, lane_change_candidate=lane_change_candidate)
+                roi_image_ls, roi_mask_ls = region_of_interest(frame, show_debug=False, return_mask=True, lane_change_candidate=lane_change_candidate)
                         
                 # --- 2. Filter White (on the ROI image) ---
                 white_ls = filter_white_pixels(roi_image_ls, show_debug=False)
@@ -707,7 +707,7 @@ def process_video():
 
 
                 # --- 4. Hough Transform ---
-                all_lines_ls = detect_hough_lines(canny_image_ls, 1, np.pi / 180, 30, frame, show_debug=True)
+                all_lines_ls = detect_hough_lines(canny_image_ls, 1, np.pi / 180, 30, frame, show_debug=False)
                 
                 left_cand_ls, right_cand_ls = get_good_lane_lines(all_lines_ls, frame_height, frame_width, lane_change_candidate=lane_change_candidate)
 
