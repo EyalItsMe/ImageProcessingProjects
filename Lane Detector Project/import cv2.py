@@ -196,19 +196,38 @@ def crosswalk_roi(image, show_debug=False):
 
     return masked, (y_top, y_bot)
 
-def region_of_interest(image, show_debug=False, return_mask=False):
+def region_of_interest(image, show_debug=False, return_mask=False, lane_change_candidate=None):
     """
     Applies a trapezoid mask using specific coordinates.
     """
     height, width = image.shape[:2]
     y_top = int(ROI_TOP_Y_RATIO * height)
     y_bottom = int(ROI_BOTTOM_Y_RATIO * height)
+
+    top_left_x_ratio = ROI_TOP_LEFT_X_RATIO
+    top_right_x_ratio = ROI_TOP_RIGHT_X_RATIO
+    bottom_left_x_ratio = ROI_BOTTOM_LEFT_X_RATIO
+    bottom_right_x_ratio = ROI_BOTTOM_RIGHT_X_RATIO
+
+    if lane_change_candidate:
+        if lane_change_candidate == "left":
+            top_left_x_ratio = top_left_x_ratio
+            top_right_x_ratio = top_right_x_ratio + 0.05
+            bottom_left_x_ratio = bottom_left_x_ratio - 0.2
+            bottom_right_x_ratio = bottom_right_x_ratio - 0.15
+        elif lane_change_candidate == "right":
+            top_left_x_ratio = top_left_x_ratio - 0.05
+            top_right_x_ratio = top_right_x_ratio
+            bottom_left_x_ratio = bottom_left_x_ratio + 0.2
+            bottom_right_x_ratio = bottom_right_x_ratio + 0.15
+
+
     polygons = np.array([
         [
-            (int(ROI_BOTTOM_LEFT_X_RATIO * width), y_bottom),
-            (int(ROI_TOP_LEFT_X_RATIO * width), y_top),
-            (int(ROI_TOP_RIGHT_X_RATIO * width), y_top),
-            (int(ROI_BOTTOM_RIGHT_X_RATIO * width), y_bottom),
+            (int(bottom_left_x_ratio * width), y_bottom),
+            (int(top_left_x_ratio * width), y_top),
+            (int(top_right_x_ratio * width), y_top),
+            (int(bottom_right_x_ratio * width), y_bottom),
         ]
     ])
     
@@ -318,7 +337,13 @@ def detect_hough_lines(canny_image, rho_res, theta_res, threshold, color_image_f
     if show_debug:
         hough_debug = color_image_for_debug.copy()
         if all_lines is not None:
-            for r_t in all_lines:
+            total_lines = len(all_lines)
+            label_count = max(1, int(np.ceil(total_lines * 1)))
+            step = max(1, total_lines // label_count)
+            labels_added = 0
+
+            h, w = hough_debug.shape[:2]
+            for idx, r_t in enumerate(all_lines):
                 rho, theta = r_t[0]
                 a = np.cos(theta)
                 b = np.sin(theta)
@@ -329,10 +354,27 @@ def detect_hough_lines(canny_image, rho_res, theta_res, threshold, color_image_f
                 x2 = int(x0 - 1000 * (-b))
                 y2 = int(y0 - 1000 * (a))
                 cv2.line(hough_debug, (x1, y1), (x2, y2), (0, 255, 0), 1)
+
+                # Label theta for ~10% of the lines to keep the debug view readable.
+                if labels_added < label_count and (idx % step == 0):
+                    theta_deg = float(np.degrees(theta))
+                    # NOTE: cv2.putText is ASCII-only in many builds; avoid "θ" and "°" which may render as "??".
+                    label = f"theta={theta_deg:.1f} deg"
+
+                    # Place label near the line's reference point (x0, y0), clamped to image.
+                    tx = int(np.clip(x0, 0, w - 1))
+                    ty = int(np.clip(y0, 0, h - 1))
+
+                    # Draw outline for readability.
+                    cv2.putText(hough_debug, label, (tx + 5, ty - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(hough_debug, label, (tx + 5, ty - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+                    labels_added += 1
         cv2.imshow("Debug 3: Raw Hough Lines", hough_debug)
     return all_lines
 
-def get_good_lane_lines(lines, height, width):
+def get_good_lane_lines(lines, height, width, lane_change_candidate=None):
     good_left_lines = []
     good_right_lines = []
     if lines is None: return good_left_lines, good_right_lines
@@ -341,6 +383,34 @@ def get_good_lane_lines(lines, height, width):
     left_max = int(LEFT_X_BOTTOM_MAX_RATIO * width)
     right_min = int(RIGHT_X_BOTTOM_MIN_RATIO * width)
     right_max = int(RIGHT_X_BOTTOM_MAX_RATIO * width)
+
+    left_angle_min = LEFT_ANGLE_MIN_DEG
+    left_angle_max = LEFT_ANGLE_MAX_DEG
+    right_angle_min = RIGHT_ANGLE_MIN_DEG
+    right_angle_max = RIGHT_ANGLE_MAX_DEG
+
+    if lane_change_candidate == "left":
+        left_min = left_min - 0.1 * width
+        left_max = left_max 
+        right_min = right_min - 0.1 * width
+        right_max = right_max
+        #TODO: Change later
+        left_angle_min = left_angle_min + 10
+        left_angle_max = left_angle_max + 40
+        right_angle_min = right_angle_min + 20
+        right_angle_max = right_angle_max + 60
+    elif lane_change_candidate == "right":
+        left_min = left_min + 0.15 * width
+        left_max = left_max + 0.22 * width
+        right_min = right_min + 0.1 * width
+        right_max = max(right_max + 0.05 * width, width * 1.1)
+        left_angle_min = left_angle_min - 75
+        left_angle_max = left_angle_max - 30
+        right_angle_min = right_angle_min - 15
+        right_angle_max = right_angle_max - 20
+        if (left_angle_min < 0):
+            left_angle_min = 180 + left_angle_min
+        print (f"Right lane change candidate: {left_min}, {left_max}, {right_min}, {right_max}, {left_angle_min}, {left_angle_max}, {right_angle_min}, {right_angle_max}")
 
     for r_t in lines:
         rho = r_t[0, 0]
@@ -351,28 +421,74 @@ def get_good_lane_lines(lines, height, width):
         if abs(a) < 0.001: continue 
         x_bottom = int((rho - height * b) / a)
 
-        if LEFT_ANGLE_MIN_DEG < angle_deg < LEFT_ANGLE_MAX_DEG:
-            if left_min < x_bottom < left_max:
+        if (lane_change_candidate == "right"):
+            if (angle_deg > left_angle_min or angle_deg < left_angle_max):
+                print (f"Found left candidate, x_bottom: {x_bottom}, angle_deg:  {angle_deg}")
+                print(f"Theta: {theta}, Rho: {rho}")
                 good_left_lines.append((rho, theta))
-        elif RIGHT_ANGLE_MIN_DEG < angle_deg < RIGHT_ANGLE_MAX_DEG:
-            if right_min < x_bottom < right_max:
-                good_right_lines.append((rho, theta))
+            else:
+                if right_angle_min < angle_deg < right_angle_max:
+                    print (f"Found right candidate, x_bottom: {x_bottom}, angle_deg:  {angle_deg}")
+                    good_right_lines.append((rho, theta))
+
+        elif (lane_change_candidate == "left"):
+            if left_angle_min < angle_deg < left_angle_max:
+                if left_min < x_bottom < left_max:
+                    good_left_lines.append((rho, theta))
+            elif right_angle_min < angle_deg or angle_deg < right_angle_max:
+                if right_min < x_bottom < right_max:
+                    good_right_lines.append((rho, theta))
+        else:
+            if left_angle_min < angle_deg < left_angle_max:
+                if left_min < x_bottom < left_max:
+                    good_left_lines.append((rho, theta))
+            elif right_angle_min < angle_deg < right_angle_max:
+                if right_min < x_bottom < right_max:
+                    good_right_lines.append((rho, theta))
     return good_left_lines, good_right_lines
 
-def get_average_lane(lines):
-    if len(lines) == 0: return None, None
-    rhos = [l[0] for l in lines]
-    thetas = [l[1] for l in lines]
+def get_average_lane(lines, lane_change_candidate=None):
+    if len(lines) == 0:
+        return None, None
+
+    # In lane-change mode, rho sign can flip (Hough ambiguity), producing large jumps
+    # (e.g., -300 mixed with +300). In that case, average only the dominant sign
+    # cluster (positive or negative), based on which has more candidates.
+    chosen_lines = lines
+    if lane_change_candidate:
+        neg_lines = [l for l in lines if l[0] < 0]
+        pos_lines = [l for l in lines if l[0] >= 0]
+
+        if len(neg_lines) > len(pos_lines):
+            chosen_lines = neg_lines
+        else:
+            chosen_lines = pos_lines
+
+    rhos = [l[0] for l in chosen_lines]
+    thetas = [l[1] for l in chosen_lines]
     return np.mean(rhos), np.mean(thetas)
 
-def get_weighted_average(history):
+def get_weighted_average(history, lane_change_candidate=None):
     valid_lines = [line for line in history if line[0] is not None]
     N = len(valid_lines)
     if N == 0: return None, None
+
+    # In lane-change mode, the same physical line can occasionally appear with
+    # a flipped Hough representation, creating large jumps in rho and theta.
+    # When enabled, keep only the dominant cluster (by count) before smoothing.
+    chosen_lines = valid_lines
+    if lane_change_candidate:
+        # 1) Dominant rho sign (tie -> positive, matching get_average_lane behavior)
+        neg_lines = [l for l in chosen_lines if l[0] < 0]
+        pos_lines = [l for l in chosen_lines if l[0] >= 0]
+        chosen_lines = neg_lines if len(neg_lines) > len(pos_lines) else pos_lines
+        if len(chosen_lines) == 0:
+            chosen_lines = valid_lines
     
+    N = len(chosen_lines)
     weights = np.arange(1, N + 1)
-    rhos = np.array([h[0] for h in valid_lines])
-    thetas = np.array([h[1] for h in valid_lines])
+    rhos = np.array([h[0] for h in chosen_lines])
+    thetas = np.array([h[1] for h in chosen_lines])
     
     return np.sum(weights * rhos) / np.sum(weights), np.sum(weights * thetas) / np.sum(weights)
 
@@ -433,7 +549,10 @@ def is_crosswalk(horizontal_lines, show_debug=False, debug_image=None):
 def process_video():
     left_line_history = []
     right_line_history = []
-    
+
+    #Lane switching history
+    left_line_history_ls = []
+    right_line_history_ls = []
     # Lane Change Detection Variables
     prev_lane_center = None
     lane_center_trend = 0
@@ -497,11 +616,11 @@ def process_video():
             cw_edges = canny_edge_detector(cw_white, show_debug=False)
 
             
-            cw_lines = detect_crosswalk_lines(cw_edges, show_debug=True)
+            cw_lines = detect_crosswalk_lines(cw_edges, show_debug=False)
 
             frame_has_crosswalk = is_crosswalk(
                 cw_lines,
-                show_debug=True,
+                show_debug=False,
                 debug_image=cw_roi_img
             )
 
@@ -528,9 +647,10 @@ def process_video():
             smooth_right = get_weighted_average(right_line_history)
             
             # 4. Lane Change Logic & Drawing
+            lane_left = smooth_left
+            lane_right = smooth_right
             if smooth_left[0] is not None and smooth_right[0] is not None:
                 # We have lanes, so we can calculate position and trend
-                draw_lane_polygon(frame, smooth_left, smooth_right)
                 
                 # Update last known valid lanes
                 last_valid_smooth_left = smooth_left
@@ -554,14 +674,17 @@ def process_video():
             else:
                 # Lanes lost - always persist last valid lanes visually
                 if last_valid_smooth_left is not None and last_valid_smooth_right is not None:
-                    draw_lane_polygon(frame, last_valid_smooth_left, last_valid_smooth_right)
-                
+                    # draw_lane_polygon(frame, last_valid_smooth_left, last_valid_smooth_right)
+                    lane_left = last_valid_smooth_left
+                    lane_right = last_valid_smooth_right
+
                 # Track lane change direction based on trend
                 if abs(lane_center_trend) > 0.4:
+                    
                     candidate = "left" if lane_center_trend > 0 else "right"
                     lane_change_candidate_frames = lane_change_candidate_frames + 1 if lane_change_candidate == candidate else 1
                     lane_change_candidate = candidate
-                    
+                                        
                     if lane_change_candidate_frames >= MIN_LANE_CHANGE_FRAMES:
                         new_status = f"Changing lanes to the {'Left' if candidate == 'left' else 'Right'}"
                         if lane_change_status != new_status:
@@ -572,6 +695,46 @@ def process_video():
                 else:
                     lane_change_candidate, lane_change_candidate_frames, lane_change_status = None, 0, ""
             
+
+            # New State machine for lane change:
+
+            if lane_change_candidate:
+                roi_image_ls, roi_mask_ls = region_of_interest(frame, show_debug=True, return_mask=True, lane_change_candidate=lane_change_candidate)
+                        
+                # --- 2. Filter White (on the ROI image) ---
+                white_ls = filter_white_pixels(roi_image_ls, show_debug=False)
+                
+                # --- 3. Canny Edges ---
+                canny_image_ls = canny_edge_detector(white_ls, show_debug=False)
+
+
+                # --- 4. Hough Transform ---
+                all_lines_ls = detect_hough_lines(canny_image_ls, 1, np.pi / 180, 30, frame, show_debug=True)
+                
+                left_cand_ls, right_cand_ls = get_good_lane_lines(all_lines_ls, frame_height, frame_width, lane_change_candidate=lane_change_candidate)
+
+                curr_left = get_average_lane(left_cand_ls, lane_change_candidate=lane_change_candidate)
+                curr_right = get_average_lane(right_cand_ls, lane_change_candidate=lane_change_candidate)
+
+                # lane_left = curr_left
+                # lane_right = curr_right 
+                left_line_history_ls.append(curr_left)
+                if len(left_line_history_ls) > HISTORY_LENGTH//2: left_line_history_ls.pop(0)
+                
+                right_line_history_ls.append(curr_right)
+                if len(right_line_history_ls) > HISTORY_LENGTH//2 : right_line_history_ls.pop(0)
+
+                smooth_left_ls = get_weighted_average(left_line_history_ls, lane_change_candidate=lane_change_candidate)
+                smooth_right_ls = get_weighted_average(right_line_history_ls, lane_change_candidate=lane_change_candidate)
+                
+                
+                # 4. Lane Change Logic & Drawing
+                if smooth_left_ls[0] is not None and smooth_right_ls[0] is not None:
+                    lane_left = smooth_left_ls
+                    lane_right = smooth_right_ls
+                    last_valid_smooth_left = smooth_left_ls
+                    last_valid_smooth_right = smooth_right_ls
+
             # Display status on the main frame
             if lane_change_status:
                 text_size = cv2.getTextSize(lane_change_status, cv2.FONT_HERSHEY_DUPLEX, 1.2, 2)[0]
@@ -597,7 +760,10 @@ def process_video():
                     (0, 0, 255),
                     3
                 )
- 
+
+            if lane_left is not None and lane_right is not None:
+                draw_lane_polygon(frame, lane_left, lane_right)
+
             cv2.imshow("Debug 4: Final Output", frame)
             out.write(frame)
             
