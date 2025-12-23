@@ -19,6 +19,8 @@ _VIDEO_INPUTS = {
 VIDEO_INPUT = str(_VIDEO_INPUTS[VIDEO_PROFILE])
 VIDEO_OUTPUT = 'lane_detection_output.mp4'
 HISTORY_LENGTH = 20 
+DISTANCE_CONSTANT = 5000 
+
 
 # --- CROSSWALK ROI (TRAPEZOID) ---
 CW_BOTTOM_LEFT_X_RATIO  = 0.0
@@ -55,6 +57,7 @@ LANE_PROFILES = {
         "LEFT_ANGLE_MAX_DEG": 55,
         "RIGHT_ANGLE_MIN_DEG": 120,
         "RIGHT_ANGLE_MAX_DEG": 140,
+        "LANE_CHANGE_TREND_THRESHOLD": 0.4,
         # Brightness adjustment (OFF by default for day)
         "APPLY_BRIGHTNESS": False,
         "BRIGHTNESS_BETA": 0,  # 0..60 (adds to V channel)
@@ -80,6 +83,7 @@ LANE_PROFILES = {
         "LEFT_ANGLE_MAX_DEG": 55,
         "RIGHT_ANGLE_MIN_DEG": 120,
         "RIGHT_ANGLE_MAX_DEG": 130,
+        "LANE_CHANGE_TREND_THRESHOLD": 0.4,
         # Brightness adjustment (OFF by default for day)
         "APPLY_BRIGHTNESS": True,
         "BRIGHTNESS_BETA": 45,  # 0..60 (adds to V channel)
@@ -105,6 +109,7 @@ LANE_PROFILES = {
         "LEFT_ANGLE_MAX_DEG": 55,
         "RIGHT_ANGLE_MIN_DEG": 120,
         "RIGHT_ANGLE_MAX_DEG": 140,
+        "LANE_CHANGE_TREND_THRESHOLD": 0.2,
         # Brightness adjustment (night / low-light)
         "APPLY_BRIGHTNESS": False,
         "BRIGHTNESS_BETA": 15,  # start here; try 15..45
@@ -137,6 +142,7 @@ APPLY_BRIGHTNESS = _p.get("APPLY_BRIGHTNESS", False)
 BRIGHTNESS_BETA = int(_p.get("BRIGHTNESS_BETA", 0))
 APPLY_CONTRAST = _p.get("APPLY_CONTRAST", False)
 CONTRAST_ALPHA = float(_p.get("CONTRAST_ALPHA", 1.0))
+LANE_CHANGE_TREND_THRESHOLD = _p["LANE_CHANGE_TREND_THRESHOLD"]
 del _p
 
 # --- HELPER FUNCTIONS ---
@@ -542,6 +548,136 @@ def is_crosswalk(horizontal_lines, show_debug=False, debug_image=None):
         return False
     return True
 
+
+def detect_vehicles_in_lane_polygon(image, left_line, right_line, show_debug=False):
+    if left_line is None or right_line is None or left_line[0] is None or right_line[0] is None:
+        return
+
+    height_img, width_img = image.shape[:2]
+
+    lane_mask = np.zeros((height_img, width_img), dtype=np.uint8)
+    rho_l, theta_l = left_line
+    rho_r, theta_r = right_line
+    y_top = 235                                                                                                                                         
+    y_bottom = 360 
+
+    # Lane boundaries with 20px offset
+    x_l_bottom = get_x_coordinate(rho_l, theta_l, y_bottom) - 20
+    x_l_top    = get_x_coordinate(rho_l, theta_l, y_top)    - 20
+    x_r_top    = get_x_coordinate(rho_r, theta_r, y_top)    + 20
+    x_r_bottom = get_x_coordinate(rho_r, theta_r, y_bottom) + 20
+
+    pts = np.array([[(x_l_bottom, y_bottom), (x_l_top, y_top), 
+                     (x_r_top, y_top), (x_r_bottom, y_bottom)]], dtype=np.int32)
+    cv2.fillPoly(lane_mask, pts, 255)
+
+    masked_lane_image = cv2.bitwise_and(image, image, mask=lane_mask)
+    
+    hsv = cv2.cvtColor(masked_lane_image, cv2.COLOR_BGR2HSV)
+
+    lower_blue_grey = np.array([90, 0, 0]) 
+    upper_blue_grey = np.array([180, 50, 40])
+
+    blue_mask = cv2.inRange(hsv, lower_blue_grey, upper_blue_grey)
+
+    kernel = np.ones((3,3), np.uint8)
+    blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+
+    lower_red1 = np.array([0, 100, 20]) 
+    upper_red1 = np.array([50, 255, 255])
+    lower_red2 = np.array([130, 100, 20])
+    upper_red2 = np.array([180, 255, 255])
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    red_mask = cv2.bitwise_or(mask1, mask2)    
+
+    mask = cv2.bitwise_or(blue_mask, red_mask)
+
+    kernel = np.ones((5, 20), np.uint8) 
+    dilated_mask = cv2.dilate(mask, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(dilated_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    expanded_rectangles = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        
+        if w / float(h) > 1.2: 
+            y_top_expanded = max(0, y - 25)
+            y_bottom_expanded = min(height_img, y + h + 25)
+            
+            w_expanded = int(1.5 * w)
+            h_expanded = y_bottom_expanded - y_top_expanded
+            
+            expanded_rectangles.append((x, y_top_expanded, w_expanded, h_expanded))
+
+    merged_rectangles = merge_close_rectangles(expanded_rectangles, distance_threshold=15)
+
+    for (x, y, w, h) in merged_rectangles:
+        
+        y_center = int(y + h / 2)
+        
+        limit_left_x = get_x_coordinate(rho_l, theta_l, y_center) - 20
+        limit_right_x = get_x_coordinate(rho_r, theta_r, y_center) + 20
+        
+        final_x1 = max(x, limit_left_x)
+        final_x2 = min(x + w, limit_right_x)
+        
+        if final_x1 < final_x2:
+            color = (0, 0, 255)
+            cv2.rectangle(image, (final_x1, y), (final_x2, y + h), color, 2)
+            
+            label = f"Close Car"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            
+            text_x = final_x1
+            if text_x + tw > final_x2: text_x = final_x2 - tw
+            
+            cv2.rectangle(image, (text_x, y - 20), (text_x + tw, y), color, -1)
+            cv2.putText(image, label, (text_x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+def merge_close_rectangles(rects, distance_threshold=10):
+
+    if not rects:
+        return []
+
+    boxes = [[x, y, x + w, y + h] for (x, y, w, h) in rects]
+    
+    merged = True
+    while merged:
+        merged = False
+        new_boxes = []
+        while boxes:
+            b1 = boxes.pop(0)
+            was_merged = False
+            
+            for i, b2 in enumerate(boxes):
+
+                if (b1[0] < b2[2] + distance_threshold and 
+                    b1[2] + distance_threshold > b2[0] and 
+                    b1[1] < b2[3] + distance_threshold and 
+                    b1[3] + distance_threshold > b2[1]):
+                    
+                    new_x1 = min(b1[0], b2[0])
+                    new_y1 = min(b1[1], b2[1])
+                    new_x2 = max(b1[2], b2[2])
+                    new_y2 = max(b1[3], b2[3])
+                    
+                    boxes[i] = [new_x1, new_y1, new_x2, new_y2]
+                    was_merged = True
+                    merged = True 
+                    break
+            
+            if not was_merged:
+                new_boxes.append(b1)
+        
+        boxes = new_boxes
+
+    final_rects = [[b[0], b[1], b[2] - b[0], b[3] - b[1]] for b in boxes]
+    return final_rects
+
+
+
 # --- MAIN EXECUTION ---
 
 def process_video():
@@ -643,7 +779,9 @@ def process_video():
 
             smooth_left = get_weighted_average(left_line_history)
             smooth_right = get_weighted_average(right_line_history)
-            
+                        # Now we pass the smooth lanes to the vehicle detector
+            detect_vehicles_in_lane_polygon(frame, smooth_left, smooth_right, show_debug=True)
+
             # 4. Lane Change Logic & Drawing
             lane_left = smooth_left
             lane_right = smooth_right
@@ -677,7 +815,7 @@ def process_video():
                     lane_right = last_valid_smooth_right
 
                 # Track lane change direction based on trend
-                if abs(lane_center_trend) > 0.2:
+                if abs(lane_center_trend) > LANE_CHANGE_TREND_THRESHOLD:
                     
                     candidate = "left" if lane_center_trend > 0 else "right"
                     lane_change_candidate_frames = lane_change_candidate_frames + 1 if lane_change_candidate == candidate else 1
@@ -763,7 +901,13 @@ def process_video():
                 )
 
             if lane_left is not None and lane_right is not None:
+                # Now we pass the smooth lanes to the vehicle detector
+                if (smooth_left is None or smooth_right is None):
+                    detect_vehicles_in_lane_polygon(frame, lane_left, lane_right, show_debug=True)
+
                 draw_lane_polygon(frame, lane_left, lane_right)
+                            # --- VEHICLE DETECTION (Moved After Lane Detection) ---
+
 
             cv2.imshow("Debug 4: Final Output", frame)
             out.write(frame)
